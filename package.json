@@ -1,0 +1,37 @@
+{
+  "name": "sdet-activity-ranking",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spec-first BDD suite (Cucumber + TypeScript) for the Activity Ranking API",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "cucumber-js",
+    "test:harness": "cucumber-js -p harness",
+    "test:smoke": "cucumber-js --tags @smoke",
+    "test:live": "cucumber-js -p live",
+    "test:dry": "node scripts/check-bindings.mjs",
+    "verify:red": "node scripts/verify-red-state.mjs absent",
+    "verify:html": "node scripts/verify-red-state.mjs html",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:dry && npm run test:harness && npm run verify:red && npm run verify:html"
+  },
+  "devDependencies": {
+    "@cucumber/cucumber": "^12.9.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^10.13.0",
+    "prettier": "^3.9.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "yaml": "^2.9.1"
+  }
+}

@@ -1,0 +1,188 @@
+openapi: 3.1.0
+info:
+  title: Activity Ranking API
+  version: 1.0.0
+  description: |
+    Spec-first contract for the Activity Ranking API: search a city or town by full or partial
+    name, then get the next 7 days with Skiing, Surfing, Outdoor Sightseeing and Indoor
+    Sightseeing ranked per day by weather suitability (data from Open-Meteo).
+
+    This file is the machine-readable source of truth. The test suite validates every
+    response against the schemas below with ajv, and only then checks invariants a schema
+    cannot express (src/validation/contractValidators.ts): distinct, consecutive dates;
+    4 distinct activities per day; ranks 1-4 unique and in array order; order consistent with
+    scores (ties alphabetical by activity); suitability label = score band (>=80 Excellent,
+    >=60 Good, >=40 Fair, >=20 Poor, else Unsuitable); IANA time zones; distinct locations;
+    `candidates` only, and always, for AMBIGUOUS_LOCATION.
+
+    Behaviour
+    - Search: `query` is trimmed; 2-100 characters, else 400 VALIDATION_ERROR without calling
+      Open-Meteo. No match is 200 with `results: []`. At most 10 results, in provider order.
+    - Rankings: exactly one of `locationId` (Open-Meteo geocoding id, resolved via /v1/get) or
+      `city`. Invalid, both, neither or unknown parameters: 400 VALIDATION_ERROR. Unknown
+      place: 404 LOCATION_NOT_FOUND. A `city` matching several places: 409 AMBIGUOUS_LOCATION
+      with `error.candidates` (same shape as search results) and no forecast call.
+    - Days: exactly 7, the location's local "today" (at CLOCK_NOW, see below) plus 6 days. The
+      API asks Open-Meteo for `forecast_days=7` in the location's `timezone` and returns the
+      provider's `daily.time` dates unchanged. `reasoning` is display-ready English, <= 200 chars.
+    - Open-Meteo errors or malformed JSON (search, lookup or forecast): 502
+      UPSTREAM_UNAVAILABLE (a lookup failure is never a 404). An incomplete or inconsistent
+      forecast (fewer than 7 days, a missing required array, unequal lengths, a null required
+      value, duplicate or non-consecutive dates) is also 502. Required daily variables:
+      time, weather_code, temperature_2m_max, temperature_2m_min, precipitation_sum,
+      snowfall_sum, wind_speed_10m_max; others (rain_sum, wind_gusts_10m_max,
+      precipitation_probability_max, daily_units) may be absent.
+    - Technical dependency timeout (not a product SLA): the API gives up on an Open-Meteo call
+      after <= 3 s and answers 504 UPSTREAM_TIMEOUT; the suite allows 3.5 s end to end.
+
+    Configuration read by the API (how the suite reaches it deterministically)
+    - OPEN_METEO_GEOCODING_BASE_URL (production https://geocoding-api.open-meteo.com) and
+      OPEN_METEO_FORECAST_BASE_URL (production https://api.open-meteo.com); under test both
+      point at the suite's stub, http://localhost:4010.
+    - CLOCK_NOW: optional ISO 8601 instant used as "now" for the 7-day horizon only; under test
+      it equals the suite's REFERENCE_NOW (default 2026-11-02T22:30:00Z).
+paths:
+  /api/v1/locations:
+    get:
+      summary: Search cities and towns by full or partial name (type-ahead)
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 100 }
+          description: Trimmed before validation.
+      responses:
+        '200':
+          description: Matches in provider relevance order (at most 10; may be empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocationSearchResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+  /api/v1/rankings:
+    get:
+      summary: 7-day activity ranking for one location
+      description: Exactly one of `locationId` or `city` must be supplied; unknown parameters are rejected.
+      parameters:
+        - name: locationId
+          in: query
+          schema: { type: string, pattern: '^[1-9][0-9]*$' }
+        - name: city
+          in: query
+          schema: { type: string, minLength: 2 }
+      responses:
+        '200':
+          description: Rankings for 7 consecutive days starting on the location's local "today"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RankingResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+components:
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    Location:
+      type: object
+      additionalProperties: false
+      required: [id, name, country, countryCode, latitude, longitude, timezone]
+      properties:
+        id: { type: string, pattern: '^[1-9][0-9]*$' }
+        name:
+          {
+            type: string,
+            minLength: 1,
+            pattern: '\S',
+            description: 'Must contain a non-whitespace character',
+          }
+        country: { type: string, minLength: 1, pattern: '\S' }
+        countryCode: { type: string, pattern: '^[A-Z]{2}$' }
+        region:
+          {
+            type: string,
+            pattern: '\S',
+            description: 'First-level administrative area (admin1); omitted when unknown, never blank',
+          }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        timezone:
+          {
+            type: string,
+            pattern: '^\S+$',
+            description: 'IANA time zone known to Intl (e.g. Europe/London); checked semantically',
+          }
+    LocationSearchResponse:
+      type: object
+      additionalProperties: false
+      required: [query, results]
+      properties:
+        query: { type: string }
+        results:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Location' }
+    Activity:
+      type: string
+      enum: [Skiing, Surfing, Outdoor Sightseeing, Indoor Sightseeing]
+    Suitability:
+      type: string
+      enum: [Excellent, Good, Fair, Poor, Unsuitable]
+    ActivityRanking:
+      type: object
+      additionalProperties: false
+      required: [activity, rank, score, suitability, reasoning]
+      properties:
+        activity: { $ref: '#/components/schemas/Activity' }
+        rank: { type: integer, minimum: 1, maximum: 4 }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        suitability: { $ref: '#/components/schemas/Suitability' }
+        reasoning: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
+    DayRanking:
+      type: object
+      additionalProperties: false
+      required: [date, activities]
+      properties:
+        date: { type: string, format: date }
+        activities:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { $ref: '#/components/schemas/ActivityRanking' }
+    RankingResponse:
+      type: object
+      additionalProperties: false
+      required: [location, days]
+      properties:
+        location: { $ref: '#/components/schemas/Location' }
+        days:
+          type: array
+          minItems: 7
+          maxItems: 7
+          items: { $ref: '#/components/schemas/DayRanking' }
+    ErrorCode:
+      type: string
+      enum: [VALIDATION_ERROR, LOCATION_NOT_FOUND, AMBIGUOUS_LOCATION, UPSTREAM_UNAVAILABLE, UPSTREAM_TIMEOUT]
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string, minLength: 1, pattern: '\S' }
+            candidates:
+              type: array
+              minItems: 2
+              items: { $ref: '#/components/schemas/Location' }

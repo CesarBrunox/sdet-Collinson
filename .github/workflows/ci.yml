@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    # One blocking job: static checks, binding check, harness self-tests and the red-state
+    # verification (no API is needed or deployed). The spec suite itself is red by design
+    # until the API exists, so it is not run here; verify:red / verify:html prove that its
+    # failures are the expected ones.
+    name: Quality (Node 24)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: reports/
